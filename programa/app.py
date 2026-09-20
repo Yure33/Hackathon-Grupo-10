@@ -2,76 +2,95 @@ import cv2
 from ultralytics import YOLO
 
 
-# 1. Função customizada que será disparada ao cruzar a linha
-def acionar_alerta_campus(pombo_id, posicao):
+# 1. Função de Alerta Logístico
+def acionar_alerta_campus(pombo_id, centro_x, centro_y):
     """
-    Função chamada automaticamente quando um pombo cruza a linha demarcada.
-    Aqui você pode integrar envios de email, logs ou acionamentos sonoros.
+    Função engatilhada automaticamente quando um pombo é detectado na área interna (à esquerda).
+    Imprime os logs contendo o ID e as coordenadas cartesianas do centro do objeto.
     """
-    print(f"🚨 [ALERTA LOGÍSTICO] Pombo detectado cruzando a zona restrita! Posição Y: {posicao}")
+    print(
+        f"🚨 [ALERTA LOGÍSTICO] Pombo ID #{pombo_id} detectado na ZONA INTERNA! Coordenadas Centro: X={centro_x}, Y={centro_y}"
+    )
 
 
-# 2. Carrega o modelo com os pesos treinados no Google Colab
-# Baixe o arquivo 'best.pt' do Colab e coloque na mesma pasta deste script
+# 2. Inicialização do modelo treinado (Pesos do YOLO)
 model = YOLO('best-30-30.pt')
 
-# 3. Carrega o vídeo de teste ou a webcam (use 0 para webcam)
-video_path = 'pigeon-video-1.mp4'
+# 3. Configuração do fluxo de captura de vídeo (Webcam: 0 ou arquivo de vídeo)
+video_path = 'gemini-pigeon-video-2.mp4'
 cap = cv2.VideoCapture(video_path)
-
-# Definindo a posição da linha virtual (coordenada Y na tela)
-Y_LINHA_RESTRIÇÃO = 350
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
+        print("Finalização da transmissão de vídeo ou falha na leitura da câmera.")
         break
 
-    # Pega as dimensões do frame para desenhar a linha de ponta a ponta
+    # Dimensões geométricas do frame
     altura, largura, _ = frame.shape
 
-    # Desenha a linha virtual de limite na tela (Cor Vermelha, Espessura 3)
-    cv2.line(frame, (0, Y_LINHA_RESTRIÇÃO), (largura, Y_LINHA_RESTRIÇÃO), (0, 0, 255), 3)
-    cv2.putText(frame, "LINHA DE LIMITE / ZONA RESTRITA", (10, Y_LINHA_RESTRIÇÃO - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    # Cálculo da linha vertical no centro exato da tela (Eixo X)
+    X_LINHA_CENTRAL = largura // 2
 
-    # Executa a inferência do modelo no frame atual
+    # Renderização da linha delimitadora vertical (Cor: Amarela | Espessura: 2px)
+    cv2.line(frame, (X_LINHA_CENTRAL, 0), (X_LINHA_CENTRAL, altura), (0, 255, 255), 2)
+
+    # Rótulos das zonas no topo da tela
+    cv2.putText(frame, "ZONA INTERNA (DENTRO)", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(frame, "ZONA EXTERNA (FORA)", (X_LINHA_CENTRAL + 10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    # Execução da inferência computacional
     results = model(frame, conf=0.4)[0]
 
-    pombos_na_zona_critica = 0
+    pombos_dentro = 0
+    pombos_fora = 0
 
-    # Percorre cada detecção encontrada pela YOLO
-    for box in results.boxes:
-        # Coordenadas da caixa delimitadora
+    # Iteração sobre cada objeto detectado pelo modelo
+    for idx, box in enumerate(results.boxes, start=1):
+        # Mapeamento das coordenadas da caixa delimitadora (Bounding Box)
         x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-        # Calcula o ponto central inferior do pombo (onde ele está pisando/andando)
+        # Cálculo das Coordenadas do Centroide do Retângulo/Pombo
         cx = int((x1 + x2) / 2)
-        cy = int(y2)
+        cy = int((y1 + y2) / 2)
 
-        # Desenha a caixa delimitadora do pombo e o ponto de referência
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 105, 180), 2)
-        cv2.circle(frame, (cx, cy), 5, (0, 255, 255), -1)
+        # LÓGICA DE GEOLOCALIZAÇÃO:
+        # Ponto à esquerda da linha central (cx < X_LINHA_CENTRAL) -> DENTRO (Vermelho)
+        # Ponto à direita da linha central (cx >= X_LINHA_CENTRAL) -> FORA (Verde)
+        if cx < X_LINHA_CENTRAL:
+            pombos_dentro += 1
+            status_pombo = "DENTRO"
+            cor_box = (0, 0, 255)  # Vermelho (BGR)
+            acionar_alerta_campus(pombo_id=idx, centro_x=cx, centro_y=cy)
+        else:
+            pombos_fora += 1
+            status_pombo = "FORA"
+            cor_box = (0, 255, 0)  # Verde (BGR)
 
-        # VERIFICAÇÃO: O pombo cruzou a linha Y?
-        if cy > Y_LINHA_RESTRIÇÃO:
-            pombos_na_zona_critica += 1
+        # 1. Desenha a Bounding Box e o Ponto Central Geométrico
+        cv2.rectangle(frame, (x1, y1), (x2, y2), cor_box, 2)
+        cv2.circle(frame, (cx, cy), 5, (255, 255, 255), -1)
 
-            # Muda a cor da caixa para vermelho se ele violou o limite
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+        # 2. Exibição do Status e Coordenadas no topo da Bounding Box
+        label_texto = f"{status_pombo} ({cx}, {cy})"
 
-            # DISPARADOR DA SUA FUNÇÃO
-            acionar_alerta_campus(pombo_id=1, posicao=cy)
+        # Fundo do texto para melhor visibilidade
+        (w_text, h_text), _ = cv2.getTextSize(label_texto, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(frame, (x1, y1 - h_text - 6), (x1 + w_text, y1), cor_box, -1)
+        cv2.putText(frame, label_texto, (x1, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-    # Exibe o painel de status na tela
-    status_texto = f"Pombos alem do limite: {pombos_na_zona_critica}"
-    cv2.putText(frame, status_texto, (20, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if pombos_na_zona_critica == 0 else (0, 0, 255), 2)
+    # Painel do cabeçalho com a contagem geral
+    status_geral = f"Pombos Dentro: {pombos_dentro} | Pombos Fora: {pombos_fora}"
+    cv2.putText(frame, status_geral, (20, altura - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-    # Exibe a imagem processada em tempo real
+    # Exibição do frame processado em tempo real
     cv2.imshow("Sistema de Monitoramento de Pragas - SECOMP 2026", frame)
 
-    # Pressione 'q' para fechar a aplicação
+    # Interrupção manual do loop de execução via tecla 'q'
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
